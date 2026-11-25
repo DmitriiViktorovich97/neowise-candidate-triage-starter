@@ -5,32 +5,132 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Входящие заявки</title>
   <style>
-    body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; }
+    body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; color: #111; }
     textarea { box-sizing: border-box; display: block; width: 100%; margin: .5rem 0; padding: .5rem; font: inherit; }
-    button { padding: .4rem .8rem; font: inherit; }
-    pre { white-space: pre-wrap; }
+    button { padding: .45rem .9rem; font: inherit; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .panel { margin-top: 1.25rem; padding: 1rem; border: 1px solid #d0d7de; border-radius: .5rem; background: #f6f8fa; }
+    .panel[hidden] { display: none; }
+    .panel--warning { border-color: #d4a72c; background: #fff8c5; }
+    .panel--error { border-color: #cf222e; background: #ffebe9; }
+    .topic-badge { display: inline-block; padding: .15rem .5rem; border-radius: .25rem; background: #ddf4ff; font-weight: 600; }
+    .label { display: block; margin-top: .75rem; font-weight: 600; }
   </style>
 </head>
 <body>
-  <h1>Входящие заявки</h1>
-  <form>
-    <label for="message">Текст заявки</label>
-    <textarea id="message" rows="4"></textarea>
-    <button type="submit">Разобрать заявку</button>
-  </form>
-  <pre id="result" aria-live="polite"></pre>
-  <script type="module">
-    const form = document.querySelector("form");
-    const result = document.querySelector("#result");
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
+<h1>Входящие заявки</h1>
+<form id="triage-form" novalidate>
+  <label for="message">Текст заявки</label>
+  <textarea id="message" rows="4" placeholder="Введите текст обращения клиента..."></textarea>
+  <button id="submit-btn" type="submit">Разобрать заявку</button>
+</form>
+
+<section id="status-box" class="panel" aria-live="polite" hidden>
+  <div id="status-message"></div>
+  <div id="ready-block" hidden>
+    <p>Тема: <span id="topic-value" class="topic-badge"></span></p>
+    <label class="label" for="draft-output">Черновик ответа менеджеру</label>
+    <textarea id="draft-output" rows="4"></textarea>
+  </div>
+</section>
+
+<script type="module">
+  const form = document.querySelector("#triage-form");
+  const messageInput = document.querySelector("#message");
+  const submitBtn = document.querySelector("#submit-btn");
+  const statusBox = document.querySelector("#status-box");
+  const statusMessage = document.querySelector("#status-message");
+  const readyBlock = document.querySelector("#ready-block");
+  const topicValue = document.querySelector("#topic-value");
+  const draftOutput = document.querySelector("#draft-output");
+
+  const TOPIC_LABELS = {
+    delivery: "Доставка (delivery)",
+    pricing: "Стоимость и цены (pricing)",
+    other: "Другое (other)",
+  };
+
+  let currentRequestId = 0;
+
+  function clearResult() {
+    topicValue.textContent = "";
+    draftOutput.value = "";
+    readyBlock.hidden = true;
+  }
+
+  function showNotice(text, variant = "default") {
+    clearResult();
+    statusBox.hidden = false;
+    statusBox.className = "panel";
+    if (variant === "warning") statusBox.classList.add("panel--warning");
+    if (variant === "error") statusBox.classList.add("panel--error");
+    statusMessage.textContent = text;
+  }
+
+  function showReady(topic, draft) {
+    statusBox.hidden = false;
+    statusBox.className = "panel";
+    statusMessage.textContent = "Заявка разобрана. Проверьте черновик перед отправкой клиенту.";
+    topicValue.textContent = TOPIC_LABELS[topic] || topic;
+    draftOutput.value = draft;
+    readyBlock.hidden = false;
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const text = messageInput.value;
+
+    if (text.trim().length === 0) {
+      showNotice("Введите текст заявки перед отправкой.", "error");
+      return;
+    }
+
+    const requestId = ++currentRequestId;
+    submitBtn.disabled = true;
+    showNotice("Анализируем заявку...");
+
+    try {
       const reply = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: document.querySelector("#message").value }),
+        body: JSON.stringify({ text }),
       });
-      result.textContent = JSON.stringify(await reply.json(), null, 2);
-    });
-  </script>
+
+      const data = await reply.json();
+
+      if (requestId !== currentRequestId) {
+        return;
+      }
+
+      if (reply.status === 400 || data.status === "invalid_input") {
+        showNotice("Некорректный ввод: текст заявки не может быть пустым.", "error");
+        return;
+      }
+
+      if (data.status === "manual_review") {
+        showNotice(
+                "Не удалось автоматически разобрать заявку (сбой или таймаут AI). Пожалуйста, разберите обращение вручную.",
+                "warning"
+        );
+        return;
+      }
+
+      if (reply.ok && data.status === "ready") {
+        showReady(data.topic, data.draft);
+        return;
+      }
+
+      showNotice("Произошла ошибка сервера. Попробуйте позже или разберите заявку вручную.", "error");
+    } catch {
+      if (requestId === currentRequestId) {
+        showNotice("Ошибка сети при обращении к серверу. Проверьте соединение.", "error");
+      }
+    } finally {
+      if (requestId === currentRequestId) {
+        submitBtn.disabled = false;
+      }
+    }
+  });
+</script>
 </body>
 </html>
